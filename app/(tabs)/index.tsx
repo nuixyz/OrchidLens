@@ -1,142 +1,93 @@
-import { CameraView, useCameraPermissions } from "expo-camera";
-import React, { useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
+import { StyleSheet, Text, View } from "react-native";
 import {
-  ActivityIndicator,
-  Alert,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+  Camera,
+  useCameraDevice,
+  useCameraPermission,
+  useFrameProcessor,
+} from "react-native-vision-camera";
+import { useRunOnJS } from "react-native-worklets";
+import { processLiveFrame } from "../../services/tfliteServices";
 
 export default function App() {
-  const cameraRef = useRef<CameraView>(null);
-  const [startCamera, setStartCamera] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [permission, requestPermission] = useCameraPermissions();
+  const { hasPermission, requestPermission } = useCameraPermission();
+  const [prediction, setPrediction] = useState<string>("Initializing AI...");
 
-  const __startCamera = async () => {
-    const status = await requestPermission();
+  // Select the standard primary rear camera lens bundle
+  const device = useCameraDevice("back");
 
-    if (status.granted) {
-      setStartCamera(true);
-    } else {
-      Alert.alert(
-        "Permission Denied",
-        "Camera access is needed to take pictures.",
-      );
+  useEffect(() => {
+    if (!hasPermission) {
+      requestPermission();
     }
-  };
+  }, [hasPermission]);
 
-  const __takePicture = async () => {
-    if (!cameraRef.current || isProcessing) return;
-    try {
-      setIsProcessing(true);
+  // JS Thread Bridge function to safely receive classification strings back from the background worklet thread
+  const updatePredictionUI = useRunOnJS((result: string) => {
+    setPrediction(result);
+  });
 
-      const photo = await cameraRef.current.takePictureAsync({
-        skipProcessing: true,
-      });
-      console.log("Photo captured successfully:", photo);
-      Alert.alert("Success", `Photo saved temporarily at: ${photo?.uri}`);
-    } catch (error) {
-      console.log("Failed to take picture: ", error);
-      Alert.alert("Error! Failed to capture photo.");
-    } finally {
-      setIsProcessing(false);
-    }
-  };
+  // High-performance real-time frame processor running at native camera speeds
+  const frameProcessor = useFrameProcessor(
+    (frame) => {
+      "worklet";
+      // Forward the direct native pointer address of the frame block over to our engine
+      const output = processLiveFrame(frame);
+      if (output) {
+        updatePredictionUI(output);
+      }
+    },
+    [updatePredictionUI],
+  );
+
+  if (!hasPermission) {
+    return (
+      <View style={styles.centered}>
+        <Text>Granting Camera Permissions...</Text>
+      </View>
+    );
+  }
+
+  if (!device) {
+    return (
+      <View style={styles.centered}>
+        <Text>No rear camera device detected.</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
-      {startCamera && permission?.granted ? (
-        <View style={styles.cameraContainer}>
-          <CameraView style={styles.camera} ref={cameraRef} />
-          <View style={styles.captureContainer}>
-            <TouchableOpacity
-              onPress={__takePicture}
-              disabled={isProcessing}
-              style={[
-                styles.captureButton,
-                isProcessing && styles.buttonDisabled,
-              ]}
-            >
-              {isProcessing ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <View style={styles.captureInnerCircle} />
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      ) : (
-        <View style={styles.buttonContainer}>
-          <TouchableOpacity onPress={__startCamera} style={styles.button}>
-            <Text style={styles.buttonText}>Start Camera</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      <Camera
+        style={StyleSheet.absoluteFill}
+        device={device}
+        isActive={true}
+        frameProcessor={frameProcessor}
+        pixelFormat="rgb" // Force native camera engine output format directly into RGB matrix
+      />
+
+      {/* Persistent Live AI HUD Overlay display panel */}
+      <View style={styles.hudOverlay}>
+        <Text style={styles.hudLabel}>Live Classification:</Text>
+        <Text style={styles.hudResult}>{prediction}</Text>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#fff",
-  },
-  cameraContainer: {
-    flex: 1,
-    width: "100%",
-  },
-  camera: {
-    flex: 1,
-    width: "100%",
-  },
-  captureContainer: {
+  container: { flex: 1, backgroundColor: "#000" },
+  centered: { flex: 1, justifyContent: "center", alignItems: "center" },
+  hudOverlay: {
     position: "absolute",
-    bottom: 40,
-    left: 0,
-    right: 0,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  captureButton: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: "rgba(255, 255, 255, 0.3)",
-    borderWidth: 4,
-    borderColor: "#fff",
-    justifyContent: "center",
+    bottom: 50,
+    left: 20,
+    right: 20,
+    backgroundColor: "rgba(20, 39, 78, 0.9)",
+    padding: 18,
+    borderRadius: 12,
     alignItems: "center",
   },
-  captureInnerCircle: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: "#fff",
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-  },
-  buttonContainer: {
-    flex: 1,
-    backgroundColor: "#fff",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  button: {
-    width: 130,
-    borderRadius: 4,
-    backgroundColor: "#14274e",
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    height: 40,
-  },
-  buttonText: {
-    color: "#fff",
-    fontWeight: "bold",
-    textAlign: "center",
-  },
+  hudLabel: { color: "#aaa", fontSize: 12, uppercase: true, fontWeight: "600" },
+  hudResult: { color: "#fff", fontSize: 20, fontWeight: "bold", marginTop: 4 },
 });
