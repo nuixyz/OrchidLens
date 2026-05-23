@@ -11,8 +11,8 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "$(OrchidLens) needs access to your Camera to capture photos and videos.",
-        "NSMicrophoneUsageDescription": "$(OrchidLens) needs access to your Microphone to record audio for video recordings."
+        "NSCameraUsageDescription": "OrchidLens needs access to your camera to classify orchids.",
+        "NSMicrophoneUsageDescription": "OrchidLens needs access to your microphone for video recordings."
       },
       "bundleIdentifier": "com.anonymous.OrchidLens"
     },
@@ -27,8 +27,11 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
-      ]
+      ],
+      "package": "com.anonymous.OrchidLens"
     },
     "web": {
       "output": "static",
@@ -38,10 +41,7 @@
       "expo-router",
       [
         "react-native-fast-tflite",
-        {
-          "enableCoreMLDelegate": true,
-          "enableAndroidGpuLibraries": true
-        }
+        { "enableCoreMLDelegate": true, "enableAndroidGpuLibraries": true }
       ]
     ],
     "experiments": {
