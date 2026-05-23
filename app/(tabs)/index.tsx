@@ -56,8 +56,7 @@ export default function CameraScreen() {
     pixelLayout: "interleaved",
   });
 
-  const model =
-    modelState.state === "loaded" ? modelState.model : undefined;
+  const model = modelState.state === "loaded" ? modelState.model : undefined;
   const resizer =
     resizerState.state === "ready" ? resizerState.resizer : undefined;
 
@@ -119,7 +118,11 @@ export default function CameraScreen() {
       try {
         const tfliteModel = boxedModel.unbox();
         const frameResizer = boxedResizer.unbox();
-        const rawResult = classifyFrameWorklet(frame, tfliteModel, frameResizer);
+        const rawResult = classifyFrameWorklet(
+          frame,
+          tfliteModel,
+          frameResizer,
+        );
 
         runOnJS(onFrameProcessed)();
 
@@ -175,7 +178,9 @@ export default function CameraScreen() {
       if (next) {
         setPrediction(null);
         setFramesProcessed(0);
-        setStatusMessage("Scanning… hold the flower in the center of the frame.");
+        setStatusMessage(
+          "Scanning… hold the flower in the center of the frame.",
+        );
       } else {
         setStatusMessage("Scan paused. Tap Start Scanning to continue.");
       }
