@@ -1,12 +1,11 @@
 import type { TfliteModel } from "react-native-fast-tflite";
-import type { Resizer } from "react-native-vision-camera-resizer";
 import type { Frame } from "react-native-vision-camera";
+import type { Resizer } from "react-native-vision-camera-resizer";
+import metadata from "../assets/model/orchid_metadata.json";
 
-import labels from "../assets/model/labels.json";
-
-export const ORCHID_LABELS = labels as string[];
 export const MODEL_INPUT_SIZE = 224;
 export const CONFIDENCE_THRESHOLD = 0.4;
+export const ORCHID_LABELS = metadata as Record<string, string>;
 
 export interface ScanPrediction {
   label: string;
@@ -21,19 +20,17 @@ export interface RawScanResult {
 }
 
 export function formatOrchidLabel(label: string): string {
-  if (label.startsWith("class")) {
-    return `Species ${label.slice(5)}`;
-  }
-  return label;
+  return label
+    .split(" ")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
 }
 
 export function buildScanPrediction(result: RawScanResult): ScanPrediction {
-  const label =
-    ORCHID_LABELS[result.classIndex] ??
-    `class${String(result.classIndex).padStart(4, "0")}`;
-
+  const key = `n${String(result.classIndex).padStart(4, "0")}`;
+  const label = ORCHID_LABELS[key] ?? key;
   return {
-    label,
+    label: key,
     displayName: formatOrchidLabel(label),
     confidence: result.confidence,
     isConfident: result.confidence >= CONFIDENCE_THRESHOLD,
@@ -43,7 +40,6 @@ export function buildScanPrediction(result: RawScanResult): ScanPrediction {
 /** MobileNetV2 `preprocess_input` for float pixels in [0, 1]. */
 function applyMobileNetPreprocess(pixels: Float32Array): Float32Array {
   "worklet";
-
   const normalized = new Float32Array(pixels.length);
   for (let index = 0; index < pixels.length; index += 1) {
     normalized[index] = pixels[index]! * 2 - 1;
@@ -53,10 +49,8 @@ function applyMobileNetPreprocess(pixels: Float32Array): Float32Array {
 
 function getTopPrediction(probabilities: Float32Array): RawScanResult {
   "worklet";
-
   let maxIndex = 0;
   let maxConfidence = probabilities[0] ?? 0;
-
   for (let index = 1; index < probabilities.length; index += 1) {
     const value = probabilities[index] ?? 0;
     if (value > maxConfidence) {
@@ -64,7 +58,6 @@ function getTopPrediction(probabilities: Float32Array): RawScanResult {
       maxIndex = index;
     }
   }
-
   return { classIndex: maxIndex, confidence: maxConfidence };
 }
 
@@ -74,20 +67,26 @@ export function classifyFrameWorklet(
   resizer: Resizer,
 ): RawScanResult {
   "worklet";
-
   const resized = resizer.resize(frame);
-
   try {
     const pixelBuffer = resized.getPixelBuffer();
     const pixels = new Float32Array(pixelBuffer);
+    if (pixels.length === 0) {
+      throw new Error("Pixel buffer is empty");
+    }
     const modelInput = applyMobileNetPreprocess(pixels);
     const inputBuffer = modelInput.buffer.slice(
       modelInput.byteOffset,
       modelInput.byteOffset + modelInput.byteLength,
     ) as ArrayBuffer;
     const outputs = model.runSync([inputBuffer]);
+    if (!outputs || outputs.length === 0) {
+      throw new Error("Model inference returned empty results");
+    }
     const probabilities = new Float32Array(outputs[0]!);
-
+    if (probabilities.length === 0) {
+      throw new Error("Model output probabilities are empty");
+    }
     return getTopPrediction(probabilities);
   } finally {
     resized.dispose();

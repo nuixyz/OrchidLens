@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -6,16 +12,18 @@ import {
   Text,
   View,
 } from "react-native";
-import { NitroModules } from "react-native-nitro-modules";
-import { useSharedValue, runOnJS } from "react-native-reanimated";
 import { useTensorflowModel } from "react-native-fast-tflite";
+import { NitroModules } from "react-native-nitro-modules";
 import {
   Camera,
   useCameraDevice,
   useCameraPermission,
   useFrameOutput,
+  type Frame,
+  type FrameDroppedReason,
 } from "react-native-vision-camera";
 import { useResizer } from "react-native-vision-camera-resizer";
+import { createSynchronizable, scheduleOnRN } from "react-native-worklets";
 
 import {
   buildScanPrediction,
@@ -39,8 +47,11 @@ export default function CameraScreen() {
     "Point your camera at an orchid, then start scanning.",
   );
 
-  const isScanningShared = useSharedValue(false);
-  const lastUiUpdateMs = useSharedValue(0);
+  // Reanimated shared values are not visible on Vision Camera's worklet runtime.
+  const isScanningSync = useMemo(() => createSynchronizable(false), []);
+  const lastUiUpdateMs = useMemo(() => createSynchronizable(0), []);
+
+  const toggleLockRef = useRef(false);
 
   const modelState = useTensorflowModel(
     require("../../assets/model/orchid_model.tflite"),
@@ -90,22 +101,38 @@ export default function CameraScreen() {
   }, []);
 
   const onScanError = useCallback((message: string) => {
-    console.error("Scan pipeline error:", message);
+    console.error("[Orchid Classifier] Scan pipeline error:", message);
     setStatusMessage(
       "Scan error — try stopping and starting again. Check Metro logs.",
     );
   }, []);
 
-  const frameOutput = useFrameOutput({
-    pixelFormat: "yuv",
-    dropFramesWhileBusy: true,
-    onFrameDropped: (reason) => {
-      onScanError(`Frame dropped: ${reason}`);
+  const setScanning = useCallback(
+    (next: boolean) => {
+      isScanningSync.setBlocking(next);
+      setIsScanning(next);
+
+      if (next) {
+        setPrediction(null);
+        setFramesProcessed(0);
+        lastUiUpdateMs.setBlocking(0);
+        setStatusMessage(
+          "Scanning… hold the flower in the center of the frame.",
+        );
+      } else {
+        lastUiUpdateMs.setBlocking(0);
+        setFramesProcessed(0);
+        setStatusMessage("Scan paused. Tap Start Scanning to continue.");
+      }
     },
-    onFrame: (frame) => {
+    [isScanningSync, lastUiUpdateMs],
+  );
+
+  const processFrame = useCallback(
+    (frame: Frame) => {
       "worklet";
 
-      if (!isScanningShared.value) {
+      if (!isScanningSync.getBlocking()) {
         frame.dispose();
         return;
       }
@@ -124,22 +151,43 @@ export default function CameraScreen() {
           frameResizer,
         );
 
-        runOnJS(onFrameProcessed)();
+        scheduleOnRN(onFrameProcessed);
 
         const now = Date.now();
-        if (now - lastUiUpdateMs.value < UI_UPDATE_INTERVAL_MS) {
+        if (now - lastUiUpdateMs.getBlocking() < UI_UPDATE_INTERVAL_MS) {
           return;
         }
-        lastUiUpdateMs.value = now;
-        runOnJS(onPrediction)(rawResult);
+        lastUiUpdateMs.setBlocking(now);
+        scheduleOnRN(onPrediction, rawResult);
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Unknown scan error";
-        runOnJS(onScanError)(message);
+        scheduleOnRN(onScanError, message);
       } finally {
         frame.dispose();
       }
     },
+    [
+      boxedModel,
+      boxedResizer,
+      isScanningSync,
+      lastUiUpdateMs,
+      onFrameProcessed,
+      onPrediction,
+      onScanError,
+    ],
+  );
+
+  const onFrameDropped = useCallback((reason: FrameDroppedReason) => {
+    console.warn(`[Orchid Classifier] Frame dropped: ${reason}`);
+  }, []);
+
+  const frameOutput = useFrameOutput({
+    pixelFormat: "yuv",
+    enablePreviewSizedOutputBuffers: true,
+    dropFramesWhileBusy: true,
+    onFrameDropped,
+    onFrame: processFrame,
   });
 
   useEffect(() => {
@@ -147,14 +195,6 @@ export default function CameraScreen() {
       void requestPermission();
     }
   }, [hasPermission, requestPermission]);
-
-  useEffect(() => {
-    isScanningShared.value = isScanning;
-    if (!isScanning) {
-      lastUiUpdateMs.value = 0;
-      setFramesProcessed(0);
-    }
-  }, [isScanning, isScanningShared, lastUiUpdateMs]);
 
   useEffect(() => {
     if (modelState.state === "error") {
@@ -169,24 +209,17 @@ export default function CameraScreen() {
   }, [resizerState.state]);
 
   const handleToggleScan = useCallback(() => {
-    if (!isModelReady) {
+    if (!isModelReady || toggleLockRef.current) {
       return;
     }
 
-    setIsScanning((scanning) => {
-      const next = !scanning;
-      if (next) {
-        setPrediction(null);
-        setFramesProcessed(0);
-        setStatusMessage(
-          "Scanning… hold the flower in the center of the frame.",
-        );
-      } else {
-        setStatusMessage("Scan paused. Tap Start Scanning to continue.");
-      }
-      return next;
-    });
-  }, [isModelReady]);
+    toggleLockRef.current = true;
+    setTimeout(() => {
+      toggleLockRef.current = false;
+    }, 400);
+
+    setScanning(!isScanning);
+  }, [isModelReady, isScanning, setScanning]);
 
   if (!hasPermission) {
     return (
